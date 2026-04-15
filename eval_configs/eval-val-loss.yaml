@@ -1,0 +1,12 @@
+eval_name: val_loss
+eval_tasks: bpb
+
+precision: bf16
+device_batch_size: 32
+
+tasks:
+  bpb:
+    val_data_dir: null  # Set to your val data path, e.g. /path/to/data/fineweb-edu-100b-shuffle/val
+    max_samples: 1000
+    max_files: 5
+

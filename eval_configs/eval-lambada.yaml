@@ -1,0 +1,13 @@
+eval_name: lambada
+eval_tasks: lm_eval
+
+precision: bf16
+device_batch_size: 32
+
+tasks:
+  lm_eval:
+    tasks:
+      - lambada_openai
+    num_fewshot: 0
+    batch_size: 32
+
