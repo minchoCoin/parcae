@@ -12,7 +12,7 @@ Parcae is a new looped architecture, which utilizes a handful of techniques to d
 
 # Installation
 
-Just wanna use models off the shelf? We make things easy with a PyPI package to access models. Install the package with the following:
+Just wanna use models off the shelf? We make things easy with a PyPI package to access models (cooming soon). Install the package with the following:
 ```bash
 pip install parcae-lm
 ```
