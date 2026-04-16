@@ -8,15 +8,15 @@
 
 # About
 
-Parcae is a new looped architecture, which utilizes a handful of techniques to drastically stabilize training. Parcae enables stable, hassle-free training of looped models, which we use to derive the first scaling laws for looping, finding that compute-optimal training scales looping and data in tandem.
+Parcae is a new looped architecture that utilizes a handful of techniques to stabilize training. Parcae enables stable, hassle-free training of looped models, which we use to derive the first scaling laws for looping, finding that compute-optimal training scales looping and data in tandem.
 
 # Installation
 
-Just wanna use models off the shelf? We make things easy with a PyPI package to access models (cooming soon). Install the package with the following:
+Just wanna use off-the-shelf models? We make things easy with a PyPI package to access models. Install the package with the following:
 ```bash
 pip install parcae-lm
 ```
-If you are training models then please clone the github repository 
+If you are training models, then please clone the GitHub repository 
 ```bash
 git clone https://github.com/SandyResearch/parcae.git
 cd parcae
@@ -39,7 +39,7 @@ The Docker image is hosted publicly at `ghcr.io/sandyresearch/parcae` and will b
 
 ### Local
 
-Requires Python 3.11+ and PyTorch 2.4+. Install PyTorch first following [pytorch.org](https://pytorch.org/get-started/locally/), then:
+Requires Python 3.11+ and PyTorch 2.4+. Install PyTorch first, following [pytorch.org](https://pytorch.org/get-started/locally/), then:
 
 ```bash
 pip install -e .
