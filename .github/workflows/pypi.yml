@@ -19,6 +19,11 @@ jobs:
       - name: Install build tools
         run: pip install build
 
+      - name: Copy shared files into package directory
+        run: |
+          cp README.md parcae_lm/README.md
+          cp LICENSE parcae_lm/LICENSE
+
       - name: Build package
         working-directory: parcae_lm
         run: python -m build
