@@ -240,7 +240,7 @@ def run_core_eval(model, tokenizer, device, max_seq_len=None, max_per_task=-1, s
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     baselines = {}
-    with open(meta_path, 'r') as f:
+    with open(meta_path, 'r', encoding='utf-8') as f:
         for row in csv.DictReader(f):
             baselines[row['Eval Task']] = float(row['Random baseline'])
     all_seed_results = {}
@@ -259,7 +259,7 @@ def run_core_eval(model, tokenizer, device, max_seq_len=None, max_per_task=-1, s
             }
             print0(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot, type: {task_meta['task_type']})... ", end='')
             t0 = time.time()
-            with open(data_path / task['dataset_uri'], 'r') as f:
+            with open(data_path / task['dataset_uri'], 'r', encoding='utf-8') as f:
                 data = [json.loads(line) for line in f]
             rng = random.Random(1337)
             rng.shuffle(data)

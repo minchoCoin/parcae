@@ -102,9 +102,9 @@ class Tokenizer:
 
         return cls.from_directory(checkpoint_dir)
 
-    @classmethod
-    def from_pretrained(cls, repo_id: str):
-        return cls.from_checkpoint(repo_id)
+    #@classmethod
+    #def from_pretrained(cls, repo_id: str):
+    #    return cls.from_checkpoint(repo_id)
 
     def get_vocab_size(self) -> int:
         return self.processor.vocab_size
