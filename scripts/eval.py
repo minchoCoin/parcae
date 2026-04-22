@@ -21,6 +21,148 @@ def print0(*args, **kwargs):
         print(*args, **kwargs, flush=True)
 
 
+def sync_device(device):
+    if device is None:
+        return
+    device_type = getattr(device, "type", str(device).split(":")[0])
+    if device_type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize(device)
+    elif device_type == "mps" and hasattr(torch, "mps"):
+        torch.mps.synchronize()
+
+
+def sample_next_token(logits, temperature: float, top_k=None, top_p=None, do_sample: bool = True):
+    import torch.nn.functional as F
+
+    logits = logits / max(temperature, 1e-8)
+    if top_k is not None:
+        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        logits = logits.masked_fill(logits < v[:, [-1]], float("-inf"))
+
+    if top_p is not None:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        sorted_indices_to_remove = cumulative_probs > top_p
+        sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+        sorted_indices_to_remove[:, 0] = False
+        indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+        indices_to_remove.scatter_(1, sorted_indices, sorted_indices_to_remove)
+        logits = logits.masked_fill(indices_to_remove, float("-inf"))
+
+    if do_sample:
+        probs = F.softmax(logits, dim=-1)
+        return torch.multinomial(probs, num_samples=1)
+    return logits.argmax(dim=-1, keepdim=True)
+
+
+def create_generation_cache(model, input_ids, max_new_tokens: int):
+    if not hasattr(model, "create_cache"):
+        return None, {}
+
+    batch_size = input_ids.shape[0]
+    max_seq_len = input_ids.shape[1] + max_new_tokens
+    if hasattr(getattr(model, "config", None), "mean_recurrence"):
+        return model.create_cache(num_steps=model.config.mean_recurrence), {"num_steps": model.config.mean_recurrence}
+    return model.create_cache(batch_size, max_seq_len=max_seq_len), {}
+
+
+def forward_generation_step(model, input_ids, cache=None, cache_kwargs=None):
+    cache_kwargs = cache_kwargs or {}
+    if hasattr(model, "forward_for_generation"):
+        if hasattr(getattr(model, "config", None), "mean_recurrence"):
+            return model.forward_for_generation(input_ids, past_key_values=cache, **cache_kwargs), cache
+        return model.forward_for_generation(input_ids, kv_cache=cache, **cache_kwargs), cache
+
+    outputs = model(input_ids=input_ids, past_key_values=cache, use_cache=True)
+    return {"logits": outputs.logits, "past_key_values": outputs.past_key_values}, outputs.past_key_values
+
+
+@torch.no_grad()
+def generate_with_timing(model, input_ids, max_new_tokens: int, temperature: float, top_k=None, top_p=None, do_sample: bool = True, device=None):
+    if max_new_tokens <= 0:
+        return input_ids.clone(), {
+            "prefill_tokens": input_ids.numel(),
+            "prefill_seconds": 0.0,
+            "prefill_tokens_per_second": 0.0,
+            "generate_tokens": 0,
+            "generate_seconds": 0.0,
+            "generate_tokens_per_second": 0.0,
+        }
+
+    cache, cache_kwargs = create_generation_cache(model, input_ids, max_new_tokens)
+    generated = input_ids.clone()
+
+    sync_device(device)
+    prefill_start = time.perf_counter()
+    outputs, cache = forward_generation_step(model, input_ids, cache=cache, cache_kwargs=cache_kwargs)
+    logits = outputs["logits"][:, -1, :]
+    if "past_key_values" in outputs:
+        cache = outputs["past_key_values"]
+    elif "kv_cache" in outputs:
+        cache = outputs["kv_cache"]
+    next_token = sample_next_token(logits, temperature, top_k=top_k, top_p=top_p, do_sample=do_sample)
+    sync_device(device)
+    prefill_seconds = time.perf_counter() - prefill_start
+    generated = torch.cat([generated, next_token], dim=-1)
+
+    generate_seconds = 0.0
+    generate_tokens = 0
+    current_input = next_token
+    for _ in range(max_new_tokens - 1):
+        sync_device(device)
+        generate_start = time.perf_counter()
+        outputs, cache = forward_generation_step(model, current_input, cache=cache, cache_kwargs=cache_kwargs)
+        logits = outputs["logits"][:, -1, :]
+        if "past_key_values" in outputs:
+            cache = outputs["past_key_values"]
+        elif "kv_cache" in outputs:
+            cache = outputs["kv_cache"]
+        next_token = sample_next_token(logits, temperature, top_k=top_k, top_p=top_p, do_sample=do_sample)
+        sync_device(device)
+        generate_seconds += time.perf_counter() - generate_start
+        generate_tokens += next_token.numel()
+        generated = torch.cat([generated, next_token], dim=-1)
+        current_input = next_token
+
+    prefill_tokens = input_ids.numel()
+    metrics = {
+        "prefill_tokens": prefill_tokens,
+        "prefill_seconds": prefill_seconds,
+        "prefill_tokens_per_second": prefill_tokens / prefill_seconds if prefill_seconds > 0 else 0.0,
+        "generate_tokens": generate_tokens,
+        "generate_seconds": generate_seconds,
+        "generate_tokens_per_second": generate_tokens / generate_seconds if generate_seconds > 0 else 0.0,
+    }
+    return generated, metrics
+
+
+def print_generation_metrics(metrics):
+    generate_tps = metrics["generate_tokens_per_second"]
+    generate_tps_text = f"{generate_tps:.2f}" if metrics["generate_tokens"] > 0 else "n/a"
+    print0(
+        "  "
+        f"Prefill: {metrics['prefill_tokens']:,} tokens in {metrics['prefill_seconds']:.4f}s "
+        f"({metrics['prefill_tokens_per_second']:.2f} token/s) | "
+        f"Generate: {metrics['generate_tokens']:,} tokens in {metrics['generate_seconds']:.4f}s "
+        f"({generate_tps_text} token/s)"
+    )
+
+
+def aggregate_generation_metrics(metrics_list):
+    prefill_tokens = sum(m["prefill_tokens"] for m in metrics_list)
+    prefill_seconds = sum(m["prefill_seconds"] for m in metrics_list)
+    generate_tokens = sum(m["generate_tokens"] for m in metrics_list)
+    generate_seconds = sum(m["generate_seconds"] for m in metrics_list)
+    return {
+        "prefill_tokens": prefill_tokens,
+        "prefill_seconds": prefill_seconds,
+        "prefill_tokens_per_second": prefill_tokens / prefill_seconds if prefill_seconds > 0 else 0.0,
+        "generate_tokens": generate_tokens,
+        "generate_seconds": generate_seconds,
+        "generate_tokens_per_second": generate_tokens / generate_seconds if generate_seconds > 0 else 0.0,
+    }
+
+
 def setup_distributed(settings: CLISettings):
     if settings.ddp:
         torch.distributed.init_process_group(backend="nccl")
@@ -116,7 +258,7 @@ def run_sample_task(model, tokenizer, settings: CLISettings):
         return {}
 
     task_settings = settings.tasks.sample
-    results = {"conditioned": [], "unconditioned": []}
+    results = {"conditioned": [], "unconditioned": [], "metrics": []}
 
     print0("\n" + "=" * 60)
     print0("Sample Generation")
@@ -126,17 +268,21 @@ def run_sample_task(model, tokenizer, settings: CLISettings):
         tokens = tokenizer.encode(prompt, return_tensors=False)
         input_ids = torch.tensor([tokens], device=settings.device)
         with settings._get_autocast_context():
-            output = model.generate(
+            output, metrics = generate_with_timing(
+                model,
                 input_ids,
                 max_new_tokens=task_settings.max_tokens,
                 temperature=task_settings.temperature,
                 top_k=task_settings.top_k,
                 top_p=task_settings.top_p,
                 do_sample=task_settings.temperature > 0,
+                device=settings.device,
             )
         text = tokenizer.decode(output[0].tolist())
+        print_generation_metrics(metrics)
         print0(f"\n{text}")
         results["conditioned"].append(text)
+        results["metrics"].append({"type": "conditioned", "prompt": prompt, **metrics})
 
     if task_settings.num_unconditioned > 0:
         print0("\nUnconditioned samples:")
@@ -144,15 +290,25 @@ def run_sample_task(model, tokenizer, settings: CLISettings):
         input_ids = torch.tensor([[bos]], device=settings.device)
         for _ in range(task_settings.num_unconditioned):
             with settings._get_autocast_context():
-                output = model.generate(
+                output, metrics = generate_with_timing(
+                    model,
                     input_ids,
                     max_new_tokens=task_settings.max_tokens,
                     temperature=task_settings.temperature,
                     do_sample=True,
+                    device=settings.device,
                 )
             text = tokenizer.decode(output[0].tolist())
+            print_generation_metrics(metrics)
             print0(f"\n{text}")
             results["unconditioned"].append(text)
+            results["metrics"].append({"type": "unconditioned", **metrics})
+
+    if results["metrics"]:
+        aggregate_metrics = aggregate_generation_metrics(results["metrics"])
+        print0("\nSample throughput aggregate:")
+        print_generation_metrics(aggregate_metrics)
+        results["aggregate_metrics"] = aggregate_metrics
 
     return results
 
